@@ -1,5 +1,7 @@
 # Improving Vision Capabilities of Gemini with complex tools
+<p align="center">
 <img src="media/gemini_agent.png" width="300">
+</p>
 
 This repo contains the code to reproduce the results in the [article](https://github.com/ROBOTIS-GIT/turtlebot3) 
 
