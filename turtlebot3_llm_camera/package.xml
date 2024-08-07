@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>turtlebot3_llm_camera</name>
+  <version>1.2.0</version>
+  <description>
+    TurtleBot3 ROS LLM Camera, and process the image
+  </description>
+  <license>Apache 2.0</license>
+  <author email="luis@bracavisionai.com">Luis</author>
+  <author>Luis Bracamontes</author>
+  <maintainer email="luis@bracavisionai.com">Luis</maintainer>
+  <url type="repository">https://github.com/</url>
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>dynamic_reconfigure</depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python-opencv</exec_depend>
+  <exec_depend>python-numpy</exec_depend>
+  <exec_depend>python-enum34</exec_depend>
+</package>

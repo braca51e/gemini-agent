@@ -1,0 +1,219 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+
+# Authors: Luis Bracamontes
+
+import rospy
+import numpy as np
+import cv2
+from sensor_msgs.msg import Image, CompressedImage
+from cv_bridge import CvBridge
+from dynamic_reconfigure.server import Server
+from turtlebot3_llm_camera.cfg import ImageProjectionParamsConfig
+
+class ImageProjection():
+    def __init__(self):
+        
+        self.top_left_x = rospy.get_param("/camera/extrinsic_camera_calibration/top_left_x", 302)
+        self.top_left_y = rospy.get_param("/camera/extrinsic_camera_calibration/top_left_y" , 172)
+        self.bottom_right_x = rospy.get_param("/camera/extrinsic_camera_calibration/bottom_right_x" , 1817)
+        self.bottom_right_y = rospy.get_param("/camera/extrinsic_camera_calibration/bottom_right_y" , 848)
+        self.top_right_x = rospy.get_param("/camera/extrinsic_camera_calibration/top_right_x" , 1368)
+        self.top_right_y = rospy.get_param("/camera/extrinsic_camera_calibration/top_right_y" , 160)
+        self.bottom_left_x = rospy.get_param("/camera/extrinsic_camera_calibration/bottom_left_x" , 49)
+        self.bottom_left_y = rospy.get_param("/camera/extrinsic_camera_calibration/bottom_left_y" ,993)
+        
+        self.hue_green_l = rospy.get_param("~camera/zone/green/hue_l", 46)
+        self.hue_green_h = rospy.get_param("~camera/zone/green/hue_h", 76)
+        self.saturation_green_l = rospy.get_param("~camera/zone/green/saturation_l", 86)
+        self.saturation_green_h = rospy.get_param("~camera/zone/green/saturation_h", 255)
+        self.lightness_green_l = rospy.get_param("~camera/zone/green/lightness_l", 50)
+        self.lightness_green_h = rospy.get_param("~camera/zone/green/lightness_h", 255)
+
+        self.is_calibration_mode = rospy.get_param("~is_extrinsic_camera_calibration_mode", False)
+        if self.is_calibration_mode == True:
+            srv_image_projection = Server(ImageProjectionParamsConfig, self.cbGetImageProjectionParam)
+
+        self.sub_image_type = "compressed"        # "compressed" / "raw"
+        self.pub_image_type = "compressed"        # "compressed" / "raw"
+
+        if self.sub_image_type == "compressed":
+            # subscribes compressed image 
+            self.sub_image_original = rospy.Subscriber('/camera/image_input/compressed', CompressedImage, self.cbImageProjection, queue_size=1)
+        elif self.sub_image_type == "raw":
+            # subscribes raw image 
+            self.sub_image_original = rospy.Subscriber('/camera/image_input', Image, self.cbImageProjection, queue_size=1)
+
+        if self.pub_image_type == "compressed":
+            # publishes ground-project image in compressed type 
+            self.pub_image_projected = rospy.Publisher('/camera/image_output/compressed', CompressedImage, queue_size=1)
+        elif self.pub_image_type == "raw":
+            # publishes ground-project image in raw type 
+            self.pub_image_projected = rospy.Publisher('/camera/image_output', Image, queue_size=1)
+
+        if self.is_calibration_mode == True:
+            if self.pub_image_type == "compressed":
+                # publishes calibration image in compressed type 
+                self.pub_image_calib = rospy.Publisher('/camera/image_calib/compressed', CompressedImage, queue_size=1)
+            elif self.pub_image_type == "raw":
+                # publishes calibration image in raw type 
+                self.pub_image_calib = rospy.Publisher('/camera/image_calib', Image, queue_size=1)
+
+        self.cvBridge = CvBridge()
+
+
+    def cbGetImageProjectionParam(self, config, level):
+        rospy.loginfo("[Image Projection] Extrinsic Camera Calibration Parameter reconfigured to")
+        #rospy.loginfo("top_x : %d, top_y : %d, bottom_x : %d, bottom_y : %d", config.top_x, config.top_y, config.bottom_x, config.bottom_y)
+
+        self.top_left_x = config.top_left_x
+        self.top_left_y = config.top_left_y
+        self.bottom_right_x = config.bottom_right_x
+        self.bottom_right_y = config.bottom_right_y
+        self.top_right_x = config.top_right_x
+        self.top_right_y = config.top_right_y
+        self.bottom_left_x = config.bottom_left_x
+        self.bottom_left_y = config.bottom_left_y
+
+
+        return config
+    
+    def _get_rectangle_points(self, image):
+        
+        hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        Hue_l = self.hue_green_l
+        Hue_h = self.hue_green_h
+        Saturation_l = self.saturation_green_l
+        Saturation_h = self.saturation_green_h
+        Lightness_l = self.lightness_green_l
+        Lightness_h = self.lightness_green_h
+
+        # define range of green color in HSV
+        lower_green = np.array([Hue_l, Saturation_l, Lightness_l])
+        upper_green = np.array([Hue_h, Saturation_h, Lightness_h])
+        mask = cv2.inRange(hsv_image, lower_green, upper_green)
+        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        
+        for contour in contours:
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            if len(approx) == 4:  # We found a rectangle
+                points = np.float32([point[0] for point in approx])
+                break
+        else:
+            rospy.loginfo("No green-lined rectangle found")
+            return
+        
+        # Sort the points in clockwise order starting from the top-left point
+        points = sorted(points, key=lambda x: (x[1], x[0]))
+        if points[1][0] < points[0][0]:  # Swap to make sure the top-left point is first
+            points[0], points[1] = points[1], points[0]
+        if points[3][0] < points[2][0]:  # Swap to make sure the bottom-left point is third
+            points[2], points[3] = points[3], points[2]
+            
+        # Make a list of the points in the order top-left, top-right, bottom-right, bottom-left    
+        points = [[int(p[0]), int(p[1])] for p in points]
+
+        return np.array(points) 
+
+    def cbImageProjection(self, msg_img):
+        if self.sub_image_type == "compressed":
+            # converts compressed image to opencv image
+            np_image_original = np.fromstring(msg_img.data, np.uint8)
+            cv_image_original = cv2.imdecode(np_image_original, cv2.IMREAD_COLOR)
+        elif self.sub_image_type == "raw":
+            # converts raw image to opencv image
+            cv_image_original = self.cvBridge.imgmsg_to_cv2(msg_img, "bgr8")
+
+        # setting homography variables
+        top_left_x = self.top_left_x
+        top_left_y = self.top_left_y
+        bottom_right_x = self.bottom_right_x
+        bottom_right_y = self.bottom_right_y
+        top_right_x = self.top_right_x
+        top_right_y = self.top_right_y
+        bottom_left_x = self.bottom_left_x
+        bottom_left_y = self.bottom_left_y
+
+        if self.is_calibration_mode == True:
+            # copy original image to use for cablibration
+            cv_image_calib = np.copy(cv_image_original)
+
+            # draw lines to help setting homography variables
+            cv_image_calib = cv2.line(cv_image_calib, (top_left_x, top_left_y), (top_right_x, top_right_y), (0, 0, 255), 1)
+            cv_image_calib = cv2.line(cv_image_calib, (top_right_x, top_right_y), (bottom_right_x, bottom_right_y), (0, 0, 255), 1)
+            cv_image_calib = cv2.line(cv_image_calib, (bottom_right_x, bottom_right_y), (bottom_left_x, bottom_left_y), (0, 0, 255), 1)
+            cv_image_calib = cv2.line(cv_image_calib, (bottom_left_x, bottom_left_y), (top_left_x, top_left_y), (0, 0, 255), 1)
+
+            if self.pub_image_type == "compressed":
+                # publishes calibration image in compressed type
+                self.pub_image_calib.publish(self.cvBridge.cv2_to_compressed_imgmsg(cv_image_calib, "jpg"))
+
+            elif self.pub_image_type == "raw":
+                # publishes calibration image in raw type
+                self.pub_image_calib.publish(self.cvBridge.cv2_to_imgmsg(cv_image_calib, "bgr8"))
+
+        # adding Gaussian blur to the image of original
+        cv_image_original = cv2.GaussianBlur(cv_image_original, (5, 5), 0)
+
+        ## homography transform process
+        # selecting 4 points from the green-lined rectangle original image
+        #pts_src = np.array([[160 - top_x, 180 - top_y], [160 + top_x, 180 - top_y], [160 + bottom_x, 120 + bottom_y], [160 - bottom_x, 120 + bottom_y]])
+        pts_src = np.array([[top_left_x, top_left_y], [top_right_x, top_right_y], [bottom_right_x, bottom_right_y], [bottom_left_x, bottom_left_y]])
+        #pts_src = self._get_rectangle_points(cv_image_original)
+        
+        # selecting 4 points from image that will be transformed
+        # 603 px x each px = 4.84 cm each grid box is 25 cm x 25 cm
+        # 583 px y each px = 5.83 cm
+        pts_dst = np.array([[195, 7], [800, 7], [800, 590], [195, 590]])
+
+        # finding homography matrix
+        h, status = cv2.findHomography(pts_src, pts_dst)
+
+        # homography process
+        cv_image_homography = cv2.warpPerspective(cv_image_original, h, (900, 600))
+
+        # fill the empty space with black triangles on left and right side of bottom
+        triangle1 = np.array([[0, 599], [0, 340], [200, 599]], np.int32)
+        triangle2 = np.array([[999, 599], [999, 340], [799, 599]], np.int32)
+        black = (0, 0, 0)
+        white = (255, 255, 255)
+        cv_image_homography = cv2.fillPoly(cv_image_homography, [triangle1, triangle2], black)
+        
+        # 603 px x each px = 4.84 cm each grid box is 25 cm x 25 cm
+        # 583 px y each px = 5.83 cm grid size (5,4)
+        # Add a grid to the image
+        # grid size (5,4)
+        nbx_boxes = 5
+        nby_boxes = 4 
+        grid_color = (0, 255, 0)  # green color
+        grid_thickness = 1
+
+        # Calculate the number of grid lines in x and y directions
+        '''px_per_box_x = int(603 / nbx_boxes)
+        px_per_box_y = int(583 / nby_boxes)
+
+        # Draw vertical grid lines
+        for i in range(195, 800 + 1, px_per_box_x):
+            cv2.line(cv_image_homography, (i, 7), (i, 590), grid_color, grid_thickness)
+
+        # Draw horizontal grid lines
+        for i in range(7, 600 + 1, px_per_box_y):
+            cv2.line(cv_image_homography, (195, i), (800, i), grid_color, grid_thickness)'''
+
+        if self.pub_image_type == "compressed":
+            # publishes ground-project image in compressed type
+            self.pub_image_projected.publish(self.cvBridge.cv2_to_compressed_imgmsg(cv_image_homography, "jpg"))
+
+        elif self.pub_image_type == "raw":
+            # publishes ground-project image in raw type
+            self.pub_image_projected.publish(self.cvBridge.cv2_to_imgmsg(cv_image_homography, "bgr8"))
+
+    def main(self):
+        rospy.spin()
+
+if __name__ == '__main__':
+    rospy.init_node('image_projection')
+    node = ImageProjection()
+    node.main()

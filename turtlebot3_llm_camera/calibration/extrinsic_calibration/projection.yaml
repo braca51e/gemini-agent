@@ -1,0 +1,10 @@
+camera:
+  extrinsic_camera_calibration:
+    top_left_x: 302
+    top_left_y: 172
+    bottom_right_x: 1817
+    bottom_right_y: 848
+    top_right_x: 1368
+    top_right_y: 160
+    bottom_left_x: 49
+    bottom_left_y: 993
